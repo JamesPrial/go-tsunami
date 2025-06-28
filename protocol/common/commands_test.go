@@ -78,7 +78,6 @@ func TestUnmarshalCommand(t *testing.T) {
 }
 
 func TestGetCommandUnmarshalError(t *testing.T) {
-	// wrong instruction should produce an error
 	data := []byte("PUT file 10 20\n")
 	var cmd common.GetCommand
 	if err := cmd.UnmarshalBinary(data); err == nil {
@@ -87,9 +86,111 @@ func TestGetCommandUnmarshalError(t *testing.T) {
 }
 
 func TestUnmarshalCommandInvalid(t *testing.T) {
-	// invalid instruction should return error
 	data := []byte("BOGUS\n")
 	if _, err := common.UnmarshalCommand(data); err == nil {
 		t.Error("expected error for invalid instruction")
+	}
+}
+
+func TestOkCommandMarshalUnmarshal(t *testing.T) {
+	cases := []common.OkCommand{{Filesize: 123}, {Filesize: 456}}
+	for _, c := range cases {
+		data, err := c.MarshalBinary()
+		if err != nil {
+			t.Fatalf("MarshalBinary() error = %v", err)
+		}
+		var got common.OkCommand
+		if err := got.UnmarshalBinary(data); err != nil {
+			t.Fatalf("UnmarshalBinary() error = %v", err)
+		}
+		if !reflect.DeepEqual(c, got) {
+			t.Errorf("Marshal/Unmarshal mismatch. got=%v want=%v", got, c)
+		}
+	}
+}
+
+func TestRetrCommandMarshalUnmarshal(t *testing.T) {
+	cases := []common.RetrCommand{{BlockIndex: 1}, {BlockIndex: 99}}
+	for _, c := range cases {
+		data, err := c.MarshalBinary()
+		if err != nil {
+			t.Fatalf("MarshalBinary() error = %v", err)
+		}
+		var got common.RetrCommand
+		if err := got.UnmarshalBinary(data); err != nil {
+			t.Fatalf("UnmarshalBinary() error = %v", err)
+		}
+		if !reflect.DeepEqual(c, got) {
+			t.Errorf("Marshal/Unmarshal mismatch. got=%v want=%v", got, c)
+		}
+	}
+	data := []byte("GET 10\n")
+	var cmd common.RetrCommand
+	if err := cmd.UnmarshalBinary(data); err == nil {
+		t.Error("expected error decoding invalid instruction")
+	}
+}
+
+func TestRestCommandMarshalUnmarshal(t *testing.T) {
+	cases := []common.RestCommand{{BlockIndex: 2}, {BlockIndex: 1000}}
+	for _, c := range cases {
+		data, err := c.MarshalBinary()
+		if err != nil {
+			t.Fatalf("MarshalBinary() error = %v", err)
+		}
+		var got common.RestCommand
+		if err := got.UnmarshalBinary(data); err != nil {
+			t.Fatalf("UnmarshalBinary() error = %v", err)
+		}
+		if !reflect.DeepEqual(c, got) {
+			t.Errorf("Marshal/Unmarshal mismatch. got=%v want=%v", got, c)
+		}
+	}
+	data := []byte("RETR 1\n")
+	var cmd common.RestCommand
+	if err := cmd.UnmarshalBinary(data); err == nil {
+		t.Error("expected error decoding invalid instruction")
+	}
+}
+
+func TestErrCommandMarshalUnmarshal(t *testing.T) {
+	cases := []common.ErrCommand{{Msg: "oops"}, {Msg: "bad"}}
+	for _, c := range cases {
+		data, err := c.MarshalBinary()
+		if err != nil {
+			t.Fatalf("MarshalBinary() error = %v", err)
+		}
+		var got common.ErrCommand
+		if err := got.UnmarshalBinary(data); err != nil {
+			t.Fatalf("UnmarshalBinary() error = %v", err)
+		}
+		if !reflect.DeepEqual(c, got) {
+			t.Errorf("Marshal/Unmarshal mismatch. got=%v want=%v", got, c)
+		}
+	}
+	data := []byte("OK all good\n")
+	var cmd common.ErrCommand
+	if err := cmd.UnmarshalBinary(data); err == nil {
+		t.Error("expected error decoding invalid instruction")
+	}
+}
+
+func TestDoneCommandMarshalUnmarshal(t *testing.T) {
+	var c common.DoneCommand
+	data, err := c.MarshalBinary()
+	if err != nil {
+		t.Fatalf("MarshalBinary() error = %v", err)
+	}
+	var got common.DoneCommand
+	if err := got.UnmarshalBinary(data); err != nil {
+		t.Fatalf("UnmarshalBinary() error = %v", err)
+	}
+	if !reflect.DeepEqual(c, got) {
+		t.Errorf("Marshal/Unmarshal mismatch. got=%v want=%v", got, c)
+	}
+	// invalid instruction should produce an error
+	bad := []byte("ERR\n")
+	if err := got.UnmarshalBinary(bad); err == nil {
+		t.Error("expected error decoding invalid instruction")
 	}
 }

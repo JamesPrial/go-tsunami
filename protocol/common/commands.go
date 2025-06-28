@@ -134,7 +134,7 @@ type RetrCommand struct {
 
 func (c RetrCommand) MarshalBinary() (data []byte, err error) {
 	var b bytes.Buffer
-	fmt.Fprintln(&b, OK, c.BlockIndex)
+	fmt.Fprintln(&b, RETR, c.BlockIndex)
 	return b.Bytes(), nil
 }
 func (c *RetrCommand) UnmarshalBinary(data []byte) error {
