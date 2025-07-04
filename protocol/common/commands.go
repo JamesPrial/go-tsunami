@@ -1,11 +1,14 @@
 package common
 
 import (
+	"bufio"
 	"bytes"
 	"fmt"
+	"strconv"
 	"strings"
 )
 
+// TcpInstruction represents a Tsunami protocol command type
 type TcpInstruction string
 
 const (
@@ -18,6 +21,19 @@ const (
 	INVALID TcpInstruction = "INVALID"
 )
 
+// String returns the string representation of the instruction
+func (t TcpInstruction) String() string {
+	return string(t)
+}
+
+// Command represents a Tsunami protocol command
+type Command interface {
+	MarshalBinary() (data []byte, err error)
+	UnmarshalBinary(data []byte) error
+	Instruction() TcpInstruction
+}
+
+// ParseTcpInstruction parses a string into a TcpInstruction
 func ParseTcpInstruction(str string) (TcpInstruction, error) {
 	str = strings.TrimSpace(str)
 	str = strings.ToUpper(str)
@@ -35,204 +51,309 @@ func ParseTcpInstruction(str string) (TcpInstruction, error) {
 	case "DONE":
 		return DONE, nil
 	default:
-		return INVALID, &ParseInstructionError{str}
+		return INVALID, newParseError("unknown instruction", str)
 	}
 }
 
-type Command interface {
-	MarshalBinary() (data []byte, err error)
-	UnmarshalBinary(data []byte) error
-}
-
+// UnmarshalCommand parses command data into the appropriate Command type
 func UnmarshalCommand(data []byte) (Command, error) {
-	b := bytes.NewBuffer(data)
-	var instr string
-	_, err := fmt.Fscan(b, &instr)
-	if err != nil {
-		return nil, err
+	if len(data) == 0 {
+		return nil, newProtocolError("unmarshal command", "empty command data")
 	}
-	tcpInstr, err := ParseTcpInstruction(instr)
-	if err != nil {
-		return nil, err
+
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+	if !scanner.Scan() {
+		return nil, newProtocolError("unmarshal command", "failed to read command line")
 	}
-	var ret Command
+
+	line := scanner.Text()
+	parts := strings.Fields(line)
+	if len(parts) == 0 {
+		return nil, newProtocolError("unmarshal command", "empty command")
+	}
+
+	tcpInstr, err := ParseTcpInstruction(parts[0])
+	if err != nil {
+		return nil, err // Already a ProtocolError from ParseTcpInstruction
+	}
+
+	var cmd Command
 	switch tcpInstr {
 	case GET:
-		ret = &GetCommand{}
+		cmd = &GetCommand{}
+	case RETR:
+		cmd = &RetrCommand{}
+	case OK:
+		cmd = &OkCommand{}
+	case ERR:
+		cmd = &ErrCommand{}
+	case REST:
+		cmd = &RestCommand{}
+	case DONE:
+		cmd = &DoneCommand{}
 	default:
-		return nil, fmt.Errorf("unknown command: %s", tcpInstr)
+		return nil, newProtocolError("unmarshal command", fmt.Sprintf("unknown command: %s", tcpInstr))
 	}
-	err = ret.UnmarshalBinary(data)
-	return ret, err
+
+	if err := cmd.UnmarshalBinary(data); err != nil {
+		// Wrap unmarshaling errors in ProtocolError if they aren't already
+		if _, ok := err.(*ProtocolError); ok {
+			return nil, err
+		}
+		return nil, newProtocolError("unmarshal command", fmt.Sprintf("failed to unmarshal %s command: %v", tcpInstr, err))
+	}
+
+	return cmd, nil
 }
 
+// GetCommand represents a GET request for file transfer
 type GetCommand struct {
 	Filename  string
 	Blocksize uint64
 	UdpPort   uint64
 }
 
-func (c GetCommand) MarshalBinary() (data []byte, err error) {
+func (c *GetCommand) Instruction() TcpInstruction {
+	return GET
+}
+
+func (c *GetCommand) MarshalBinary() (data []byte, err error) {
 	var b bytes.Buffer
-	fmt.Fprintln(&b, GET, c.Filename, c.Blocksize, c.UdpPort)
+	fmt.Fprintf(&b, "%s %s %d %d\n", GET, c.Filename, c.Blocksize, c.UdpPort)
 	return b.Bytes(), nil
 }
+
 func (c *GetCommand) UnmarshalBinary(data []byte) error {
-	var instr []byte
-	var filename string
-	var blocksize uint64
-	var udpPort uint64
-	b := bytes.NewBuffer(data)
-	_, err := fmt.Fscanln(b, &instr, &filename, &blocksize, &udpPort)
-	if err != nil {
-		return err
+	line := strings.TrimSpace(string(data))
+	parts := strings.Fields(line)
+	if len(parts) != 4 {
+		return newParseError("GET command format", fmt.Sprintf("expected 4 fields, got %d", len(parts)))
 	}
-	parsedInstr, err := ParseTcpInstruction(string(instr))
+
+	// Parse instruction
+	parsedInstr, err := ParseTcpInstruction(parts[0])
 	if err != nil {
 		return err
 	}
 	if parsedInstr != GET {
-		return fmt.Errorf("invalid command: expected GET, received %s", parsedInstr)
+		return newProtocolError("GET command validation", fmt.Sprintf("expected GET, got %s", parsedInstr))
 	}
+
+	// Parse filename (parts[1])
+	filename := parts[1]
+
+	// Parse blocksize
+	blocksize, err := strconv.ParseUint(parts[2], 10, 64)
+	if err != nil {
+		return newParseError("GET command format", fmt.Sprintf("invalid blocksize '%s': %v", parts[2], err))
+	}
+
+	// Parse UDP port
+	udpPort, err := strconv.ParseUint(parts[3], 10, 64)
+	if err != nil {
+		return newParseError("GET command format", fmt.Sprintf("invalid UDP port '%s': %v", parts[3], err))
+	}
+
+	// Validate parameters
+	if filename == "" {
+		return newValidationError("GET command", "filename cannot be empty")
+	}
+	if blocksize == 0 {
+		return newValidationError("GET command", "blocksize must be greater than 0")
+	}
+	if udpPort == 0 || udpPort > 65535 {
+		return newValidationError("GET command", fmt.Sprintf("UDP port must be 1-65535, got %d", udpPort))
+	}
+
 	c.Filename = filename
 	c.Blocksize = blocksize
 	c.UdpPort = udpPort
 	return nil
 }
 
+// OkCommand represents a successful response with file size
 type OkCommand struct {
 	Filesize uint64
 }
 
-func (c OkCommand) MarshalBinary() (data []byte, err error) {
+func (c *OkCommand) Instruction() TcpInstruction {
+	return OK
+}
+
+func (c *OkCommand) MarshalBinary() (data []byte, err error) {
 	var b bytes.Buffer
-	fmt.Fprintln(&b, OK, c.Filesize)
+	fmt.Fprintf(&b, "%s %d\n", OK, c.Filesize)
 	return b.Bytes(), nil
 }
+
 func (c *OkCommand) UnmarshalBinary(data []byte) error {
-	var instr []byte
-	var filesize uint64
-	b := bytes.NewBuffer(data)
-	_, err := fmt.Fscanln(b, &instr, &filesize)
-	if err != nil {
-		return err
+	line := strings.TrimSpace(string(data))
+	parts := strings.Fields(line)
+	if len(parts) != 2 {
+		return newParseError("OK command format", fmt.Sprintf("expected 2 fields, got %d", len(parts)))
 	}
-	parsedInstr, err := ParseTcpInstruction(string(instr))
+
+	// Parse instruction
+	parsedInstr, err := ParseTcpInstruction(parts[0])
 	if err != nil {
 		return err
 	}
 	if parsedInstr != OK {
-		return fmt.Errorf("invalid command: expected OK, recieved %s", parsedInstr)
+		return newProtocolError("OK command validation", fmt.Sprintf("expected OK, got %s", parsedInstr))
 	}
+
+	// Parse filesize
+	filesize, err := strconv.ParseUint(parts[1], 10, 64)
+	if err != nil {
+		return newParseError("OK command format", fmt.Sprintf("invalid filesize '%s': %v", parts[1], err))
+	}
+
 	c.Filesize = filesize
 	return nil
 }
 
+// RetrCommand represents a request to retransmit a specific block
 type RetrCommand struct {
 	BlockIndex uint64
 }
 
-func (c RetrCommand) MarshalBinary() (data []byte, err error) {
+func (c *RetrCommand) Instruction() TcpInstruction {
+	return RETR
+}
+
+func (c *RetrCommand) MarshalBinary() (data []byte, err error) {
 	var b bytes.Buffer
-	fmt.Fprintln(&b, RETR, c.BlockIndex)
+	fmt.Fprintf(&b, "%s %d\n", RETR, c.BlockIndex)
 	return b.Bytes(), nil
 }
+
 func (c *RetrCommand) UnmarshalBinary(data []byte) error {
-	var instr []byte
-	var blockIndex uint64
-	b := bytes.NewBuffer(data)
-	_, err := fmt.Fscanln(b, &instr, &blockIndex)
-	if err != nil {
-		return err
+	line := strings.TrimSpace(string(data))
+	parts := strings.Fields(line)
+	if len(parts) != 2 {
+		return newParseError("RETR command format", fmt.Sprintf("expected 2 fields, got %d", len(parts)))
 	}
-	parsedInstr, err := ParseTcpInstruction(string(instr))
+
+	// Parse instruction
+	parsedInstr, err := ParseTcpInstruction(parts[0])
 	if err != nil {
 		return err
 	}
 	if parsedInstr != RETR {
-		return fmt.Errorf("invalid command: expected RETR, recieved %s", parsedInstr)
+		return newProtocolError("RETR command validation", fmt.Sprintf("expected RETR, got %s", parsedInstr))
 	}
+
+	// Parse block index
+	blockIndex, err := strconv.ParseUint(parts[1], 10, 64)
+	if err != nil {
+		return newParseError("RETR command format", fmt.Sprintf("invalid block index '%s': %v", parts[1], err))
+	}
+
 	c.BlockIndex = blockIndex
 	return nil
 }
 
+// RestCommand represents a request to restart transmission from a specific block
 type RestCommand struct {
 	BlockIndex uint64
 }
 
-func (c RestCommand) MarshalBinary() (data []byte, err error) {
+func (c *RestCommand) Instruction() TcpInstruction {
+	return REST
+}
+
+func (c *RestCommand) MarshalBinary() (data []byte, err error) {
 	var b bytes.Buffer
-	fmt.Fprintln(&b, REST, c.BlockIndex)
+	fmt.Fprintf(&b, "%s %d\n", REST, c.BlockIndex)
 	return b.Bytes(), nil
 }
+
 func (c *RestCommand) UnmarshalBinary(data []byte) error {
-	var instr []byte
-	var blockIndex uint64
-	b := bytes.NewBuffer(data)
-	_, err := fmt.Fscanln(b, &instr, &blockIndex)
-	if err != nil {
-		return err
+	line := strings.TrimSpace(string(data))
+	parts := strings.Fields(line)
+	if len(parts) != 2 {
+		return newParseError("REST command format", fmt.Sprintf("expected 2 fields, got %d", len(parts)))
 	}
-	parsedInstr, err := ParseTcpInstruction(string(instr))
+
+	// Parse instruction
+	parsedInstr, err := ParseTcpInstruction(parts[0])
 	if err != nil {
 		return err
 	}
 	if parsedInstr != REST {
-		return fmt.Errorf("invalid command: expected REST, recieved %s", parsedInstr)
+		return newProtocolError("REST command validation", fmt.Sprintf("expected REST, got %s", parsedInstr))
 	}
+
+	// Parse block index
+	blockIndex, err := strconv.ParseUint(parts[1], 10, 64)
+	if err != nil {
+		return newParseError("REST command format", fmt.Sprintf("invalid block index '%s': %v", parts[1], err))
+	}
+
 	c.BlockIndex = blockIndex
 	return nil
 }
 
+// ErrCommand represents an error response
 type ErrCommand struct {
 	Msg string
 }
 
-func (c ErrCommand) MarshalBinary() (data []byte, err error) {
+func (c *ErrCommand) Instruction() TcpInstruction {
+	return ERR
+}
+
+func (c *ErrCommand) MarshalBinary() (data []byte, err error) {
 	var b bytes.Buffer
-	fmt.Fprintln(&b, ERR, c.Msg)
+	fmt.Fprintf(&b, "%s %s\n", ERR, c.Msg)
 	return b.Bytes(), nil
 }
+
 func (c *ErrCommand) UnmarshalBinary(data []byte) error {
-	var instr []byte
-	var msg string
-	b := bytes.NewBuffer(data)
-	_, err := fmt.Fscanln(b, &instr, &msg)
-	if err != nil {
-		return err
+	// ERR command format: "ERR message text here"
+	// The message can contain spaces, so we handle it differently
+	line := strings.TrimSpace(string(data))
+	if !strings.HasPrefix(strings.ToUpper(line), "ERR ") {
+		return newProtocolError("ERR command validation", "command must start with ERR")
 	}
-	parsedInstr, err := ParseTcpInstruction(string(instr))
-	if err != nil {
-		return err
+
+	// Extract message after "ERR "
+	if len(line) <= 4 {
+		return newValidationError("ERR command", "error message cannot be empty")
 	}
-	if parsedInstr != ERR {
-		return fmt.Errorf("invalid command: expected ERR, recieved %s", parsedInstr)
-	}
-	c.Msg = msg
+
+	c.Msg = strings.TrimSpace(line[4:]) // Remove "ERR " prefix
 	return nil
 }
 
-type DoneCommand struct {
+// DoneCommand represents completion of file transfer
+type DoneCommand struct{}
+
+func (c *DoneCommand) Instruction() TcpInstruction {
+	return DONE
 }
 
-func (c DoneCommand) MarshalBinary() (data []byte, err error) {
+func (c *DoneCommand) MarshalBinary() (data []byte, err error) {
 	var b bytes.Buffer
-	fmt.Fprintln(&b, DONE)
+	fmt.Fprintf(&b, "%s\n", DONE)
 	return b.Bytes(), nil
 }
+
 func (c *DoneCommand) UnmarshalBinary(data []byte) error {
-	var instr []byte
-	b := bytes.NewBuffer(data)
-	_, err := fmt.Fscanln(b, &instr)
+	line := strings.TrimSpace(string(data))
+	parts := strings.Fields(line)
+	if len(parts) != 1 {
+		return newParseError("DONE command format", fmt.Sprintf("expected 1 field, got %d", len(parts)))
+	}
+
+	// Parse instruction
+	parsedInstr, err := ParseTcpInstruction(parts[0])
 	if err != nil {
 		return err
 	}
-	parsedInstr, err := ParseTcpInstruction(string(instr))
-	if err != nil {
-		return err
+	if parsedInstr != DONE {
+		return newProtocolError("DONE command validation", fmt.Sprintf("expected DONE, got %s", parsedInstr))
 	}
-	if parsedInstr != ERR {
-		return fmt.Errorf("invalid command: expected DONE, recieved %s", parsedInstr)
-	}
+
 	return nil
 }
