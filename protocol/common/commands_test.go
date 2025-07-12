@@ -379,9 +379,14 @@ func TestFilenameWithSpaces(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name:    "filename with spaces should fail",
-			input:   []byte("GET my file.txt 1024 8080\n"),
-			wantErr: true, // Should fail because we split on spaces
+			name:  "filename with spaces now works",
+			input: []byte("GET my file with spaces.txt 1024 8080\n"),
+			expected: common.GetCommand{
+				Filename:  "my file with spaces.txt",
+				Blocksize: 1024,
+				UdpPort:   8080,
+			},
+			wantErr: false,
 		},
 		{
 			name:  "filename with underscores works",
@@ -402,6 +407,11 @@ func TestFilenameWithSpaces(t *testing.T) {
 				UdpPort:   8080,
 			},
 			wantErr: false,
+		},
+		{
+			name:    "not enough fields",
+			input:   []byte("GET file.txt\n"),
+			wantErr: true,
 		},
 	}
 
