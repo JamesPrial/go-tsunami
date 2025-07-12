@@ -126,8 +126,8 @@ func (c *GetCommand) MarshalBinary() (data []byte, err error) {
 func (c *GetCommand) UnmarshalBinary(data []byte) error {
 	line := strings.TrimSpace(string(data))
 	parts := strings.Fields(line)
-	if len(parts) != 4 {
-		return newParseError("GET command format", fmt.Sprintf("expected 4 fields, got %d", len(parts)))
+	if len(parts) < 4 {
+		return newParseError("GET command format", fmt.Sprintf("expected at least 4 fields, got %d", len(parts)))
 	}
 
 	// Parse instruction
@@ -139,19 +139,25 @@ func (c *GetCommand) UnmarshalBinary(data []byte) error {
 		return newProtocolError("GET command validation", fmt.Sprintf("expected GET, got %s", parsedInstr))
 	}
 
-	// Parse filename (parts[1])
-	filename := parts[1]
+	// The last two parts are blocksize and udpport. Everything in between is the filename.
+	lastIndex := len(parts) - 1
+	udpPortStr := parts[lastIndex]
+	blocksizeStr := parts[lastIndex-1]
+	filenameParts := parts[1 : lastIndex-1]
+
+	// Parse filename
+	filename := strings.Join(filenameParts, " ")
 
 	// Parse blocksize
-	blocksize, err := strconv.ParseUint(parts[2], 10, 64)
+	blocksize, err := strconv.ParseUint(blocksizeStr, 10, 64)
 	if err != nil {
-		return newParseError("GET command format", fmt.Sprintf("invalid blocksize '%s': %v", parts[2], err))
+		return newParseError("GET command format", fmt.Sprintf("invalid blocksize '%s': %v", blocksizeStr, err))
 	}
 
 	// Parse UDP port
-	udpPort, err := strconv.ParseUint(parts[3], 10, 64)
+	udpPort, err := strconv.ParseUint(udpPortStr, 10, 64)
 	if err != nil {
-		return newParseError("GET command format", fmt.Sprintf("invalid UDP port '%s': %v", parts[3], err))
+		return newParseError("GET command format", fmt.Sprintf("invalid UDP port '%s': %v", udpPortStr, err))
 	}
 
 	// Validate parameters
